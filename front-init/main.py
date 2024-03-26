@@ -1,52 +1,59 @@
-from flask import Flask, render_template, request, redirect, url_for
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import socket
 from datetime import datetime
 import json
 import os
+from urllib.parse import urlparse, parse_qs
 
-app = Flask(__name__)
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            with open('index.html', 'rb') as f:
+                self.wfile.write(f.read())
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'404 Not Found')
 
-# Перевірка наявності директорії для збереження даних
-if not os.path.exists('storage'):
-    os.makedirs('storage')
+    def do_POST(self):
+        if self.path == '/message':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = parse_qs(post_data.decode('utf-8'))
+            username = data.get('username', [''])[0]
+            message = data.get('message', [''])[0]
+            self.save_message(username, message)
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'404 Not Found')
 
-# Функція для збереження повідомлення у файл data.json
-def save_message(username, message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    data = {
-        timestamp: {
-            "username": username,
-            "message": message
+    def save_message(self, username, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        data = {
+            timestamp: {
+                "username": username,
+                "message": message
+            }
         }
-    }
-    with open('storage/data.json', 'a+') as file:
-        file.seek(0)
-        data_list = json.load(file)
-        data_list.update(data)
-        file.seek(0)
-        json.dump(data_list, file, indent=4)
+        if not os.path.exists('storage'):
+            os.makedirs('storage')
+        with open('storage/data.json', 'a+') as file:
+            file.seek(0)
+            try:
+                data_list = json.load(file)
+            except json.decoder.JSONDecodeError:
+                data_list = {}
+            data_list.update(data)
+            file.seek(0)
+            json.dump(data_list, file, indent=4)
 
-# Головна сторінка
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-# Сторінка для введення повідомлення
-@app.route('/message', methods=['GET', 'POST'])
-def message():
-    if request.method == 'POST':
-        username = request.form['username']
-        message = request.form['message']
-        save_message(username, message)
-        return redirect(url_for('index'))
-    return render_template('message.html')
-
-# Сторінка для обробки помилки 404
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('error.html'), 404
-
-# Socket сервер для обробки даних
 def socket_server():
     UDP_IP = "127.0.0.1"
     UDP_PORT = 5000
@@ -57,12 +64,18 @@ def socket_server():
     while True:
         data, addr = sock.recvfrom(1024)
         data = data.decode('utf-8').split(',')
-        save_message(data[0], data[1])
+        RequestHandler().save_message(data[0], data[1])
+
+def run(server_class=HTTPServer, handler_class=RequestHandler, port=3000):
+    server_address = ('', port)
+    httpd = server_class(server_address, handler_class)
+    print(f"Server started on port {port}")
+    httpd.serve_forever()
 
 if __name__ == '__main__':
-    # Запускаємо socket сервер у окремому потоці
+    # Start socket server in a separate thread
     import threading
     socket_thread = threading.Thread(target=socket_server)
     socket_thread.start()
-    # Запускаємо веб-додаток на порті 3000
-    app.run(port=3000)
+    # Start HTTP server
+    run()
